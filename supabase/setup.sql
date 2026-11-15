@@ -1,16 +1,33 @@
 /*      #########################################################################################################################################################
 		Created: 13.11.2026, Marco
-		Purpose: Database schema for the Boulder-Challenge web app (challenges, results and change log in Supabase)
-		Description: Creates the tables for challenges and results of the running seasons plus an audit log that records every change with the participant who made it. Everyone can read, only the shared group login can write; the log is filled by triggers so clients cannot tamper with it.
+		Purpose: Database schema for the Boulder-Challenge web app (seasons, participants, challenges, results and change log in Supabase)
+		Description: Holds all competition data incl. archived seasons, so nothing has to be public in data.json any more. Only the shared group login can read or write; anonymous visitors see nothing. Every change is written by triggers into an audit log together with the participant who made it.
 
 		History:
 		Date		Who			Change description
+		15.11.26	Marco		Read access only with group login; seasons and settings moved from data.json into the database; ping() for keep-alive.
 		#########################################################################################################################################################  */
 
--- Run once in the Supabase SQL editor. The script is idempotent and can be run again after changes.
+-- Run in the Supabase SQL editor. The script is idempotent and can be run again after changes.
 
 
 /* ---------------- Tables ---------------- */
+
+CREATE TABLE IF NOT EXISTS public.seasons (
+	id				TEXT		PRIMARY KEY,
+	-- Season object as in data.json without challenges (name, shortName, start, totalChallenges, archived, participants)
+	data			JSONB		NOT NULL,
+	changed_by		TEXT		NOT NULL,
+	changed_at		TIMESTAMPTZ	NOT NULL DEFAULT NOW()
+);
+
+-- Top-level values of data.json, today only currentSeasonId
+CREATE TABLE IF NOT EXISTS public.settings (
+	key				TEXT		PRIMARY KEY,
+	value			JSONB,
+	changed_by		TEXT		NOT NULL,
+	changed_at		TIMESTAMPTZ	NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS public.challenges (
 	season_id		TEXT		NOT NULL,
@@ -57,6 +74,25 @@ CREATE TABLE IF NOT EXISTS public.change_log (
 );
 
 CREATE INDEX IF NOT EXISTS ix_change_log_changed_at ON public.change_log (changed_at DESC);
+
+-- Added separately so the script also upgrades a database created with the first version (challenges before seasons)
+DO $$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_challenges_season') THEN
+		-- Seasons already referenced by challenges get a placeholder row; the app's import overwrites it with the real data
+		INSERT INTO public.seasons (id, data, changed_by)
+		SELECT DISTINCT
+			c.season_id,
+			jsonb_build_object('id', c.season_id, 'name', c.season_id, 'archived', FALSE, 'participants', '[]'::JSONB),
+			'setup'
+		FROM public.challenges AS c
+		ON CONFLICT (id) DO NOTHING;
+
+		ALTER TABLE public.challenges
+			ADD CONSTRAINT fk_challenges_season FOREIGN KEY (season_id) REFERENCES public.seasons (id) ON UPDATE CASCADE;
+	END IF;
+END;
+$$;
 
 
 /* ---------------- Triggers ---------------- */
@@ -115,9 +151,13 @@ BEGIN
 		v_row ->> 'changed_by',
 		TG_TABLE_NAME,
 		TG_OP,
-		v_row ->> 'season_id',
+		-- seasons store their own key in "id", challenges and results in "season_id"
+		CASE WHEN TG_TABLE_NAME = 'seasons' THEN v_row ->> 'id' ELSE v_row ->> 'season_id' END,
 		-- challenges store their own key in "id", results in "challenge_id"
-		COALESCE(v_row ->> 'challenge_id', v_row ->> 'id'),
+		CASE
+			WHEN TG_TABLE_NAME = 'challenges' THEN v_row ->> 'id'
+			WHEN TG_TABLE_NAME = 'results' THEN v_row ->> 'challenge_id'
+		END,
 		v_row ->> 'participant_id',
 		v_old,
 		v_new
@@ -127,60 +167,77 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_challenges_changed_at ON public.challenges;
-CREATE TRIGGER trg_challenges_changed_at
-	BEFORE INSERT OR UPDATE ON public.challenges
-	FOR EACH ROW EXECUTE FUNCTION public.set_changed_at();
-
-DROP TRIGGER IF EXISTS trg_results_changed_at ON public.results;
-CREATE TRIGGER trg_results_changed_at
-	BEFORE INSERT OR UPDATE ON public.results
-	FOR EACH ROW EXECUTE FUNCTION public.set_changed_at();
-
-DROP TRIGGER IF EXISTS trg_challenges_log ON public.challenges;
-CREATE TRIGGER trg_challenges_log
-	AFTER INSERT OR UPDATE OR DELETE ON public.challenges
-	FOR EACH ROW EXECUTE FUNCTION public.log_change();
-
-DROP TRIGGER IF EXISTS trg_results_log ON public.results;
-CREATE TRIGGER trg_results_log
-	AFTER INSERT OR UPDATE OR DELETE ON public.results
-	FOR EACH ROW EXECUTE FUNCTION public.log_change();
+DO $$
+DECLARE
+	v_table		TEXT;
+BEGIN
+	-- Same two triggers on every data table: server timestamp before, audit log after
+	FOREACH v_table IN ARRAY ARRAY['seasons', 'settings', 'challenges', 'results']
+	LOOP
+		EXECUTE format('DROP TRIGGER IF EXISTS trg_%1$s_changed_at ON public.%1$I', v_table);
+		EXECUTE format('CREATE TRIGGER trg_%1$s_changed_at BEFORE INSERT OR UPDATE ON public.%1$I FOR EACH ROW EXECUTE FUNCTION public.set_changed_at()', v_table);
+		EXECUTE format('DROP TRIGGER IF EXISTS trg_%1$s_log ON public.%1$I', v_table);
+		EXECUTE format('CREATE TRIGGER trg_%1$s_log AFTER INSERT OR UPDATE OR DELETE ON public.%1$I FOR EACH ROW EXECUTE FUNCTION public.log_change()', v_table);
+	END LOOP;
+END;
+$$;
 
 
 /* ---------------- Access (Row Level Security) ---------------- */
 
-ALTER TABLE public.challenges ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.results ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.change_log ENABLE ROW LEVEL SECURITY;
+-- TRUE only for a real login (the shared group account); Supabase "anonymous sign-ins" also get the role authenticated and are excluded here
+CREATE OR REPLACE FUNCTION public.is_group_member()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+AS $$
+	SELECT auth.uid() IS NOT NULL
+		AND COALESCE((auth.jwt() ->> 'is_anonymous')::BOOLEAN, FALSE) = FALSE;
+$$;
 
--- Explicit grants, because newer Supabase projects no longer expose new tables to the API automatically
-GRANT SELECT ON public.challenges, public.results TO anon, authenticated;
-GRANT INSERT, UPDATE ON public.challenges, public.results TO authenticated;
-GRANT SELECT ON public.change_log TO authenticated;
--- No DELETE grant: the app never deletes, so a mistake cannot wipe a season
-REVOKE DELETE ON public.challenges, public.results FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.change_log FROM anon, authenticated;
+DO $$
+DECLARE
+	v_table		TEXT;
+BEGIN
+	FOREACH v_table IN ARRAY ARRAY['seasons', 'settings', 'challenges', 'results', 'change_log']
+	LOOP
+		EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', v_table);
 
--- Leaderboard is public, like data.json in the public repo today
-DROP POLICY IF EXISTS challenges_read ON public.challenges;
-CREATE POLICY challenges_read ON public.challenges FOR SELECT TO anon, authenticated USING (TRUE);
+		-- Anonymous visitors get nothing at all; explicit grants because newer Supabase projects no longer expose new tables automatically
+		EXECUTE format('REVOKE ALL ON public.%I FROM anon', v_table);
+		EXECUTE format('GRANT SELECT ON public.%I TO authenticated', v_table);
 
-DROP POLICY IF EXISTS results_read ON public.results;
-CREATE POLICY results_read ON public.results FOR SELECT TO anon, authenticated USING (TRUE);
+		-- Policies from the first version allowed anon to read; drop them by their old names
+		EXECUTE format('DROP POLICY IF EXISTS %1$s_read ON public.%1$I', v_table);
+		EXECUTE format('CREATE POLICY %1$s_read ON public.%1$I FOR SELECT TO authenticated USING (public.is_group_member())', v_table);
 
--- Only the shared group login may write (sign-ups must be disabled in Supabase, see README)
-DROP POLICY IF EXISTS challenges_insert ON public.challenges;
-CREATE POLICY challenges_insert ON public.challenges FOR INSERT TO authenticated WITH CHECK (TRUE);
+		IF v_table <> 'change_log' THEN
+			EXECUTE format('GRANT INSERT, UPDATE ON public.%I TO authenticated', v_table);
+			-- No DELETE grant: the app never deletes, so a mistake cannot wipe a season
+			EXECUTE format('REVOKE DELETE ON public.%I FROM authenticated', v_table);
 
-DROP POLICY IF EXISTS challenges_update ON public.challenges;
-CREATE POLICY challenges_update ON public.challenges FOR UPDATE TO authenticated USING (TRUE) WITH CHECK (TRUE);
+			EXECUTE format('DROP POLICY IF EXISTS %1$s_insert ON public.%1$I', v_table);
+			EXECUTE format('CREATE POLICY %1$s_insert ON public.%1$I FOR INSERT TO authenticated WITH CHECK (public.is_group_member())', v_table);
+			EXECUTE format('DROP POLICY IF EXISTS %1$s_update ON public.%1$I', v_table);
+			EXECUTE format('CREATE POLICY %1$s_update ON public.%1$I FOR UPDATE TO authenticated USING (public.is_group_member()) WITH CHECK (public.is_group_member())', v_table);
+		ELSE
+			-- The log is written only by the trigger function
+			REVOKE INSERT, UPDATE, DELETE ON public.change_log FROM authenticated;
+		END IF;
+	END LOOP;
+END;
+$$;
 
-DROP POLICY IF EXISTS results_insert ON public.results;
-CREATE POLICY results_insert ON public.results FOR INSERT TO authenticated WITH CHECK (TRUE);
 
-DROP POLICY IF EXISTS results_update ON public.results;
-CREATE POLICY results_update ON public.results FOR UPDATE TO authenticated USING (TRUE) WITH CHECK (TRUE);
+/* ---------------- Keep-alive ---------------- */
 
-DROP POLICY IF EXISTS change_log_read ON public.change_log;
-CREATE POLICY change_log_read ON public.change_log FOR SELECT TO authenticated USING (TRUE);
+-- Free Supabase projects pause after a week without database activity; the GitHub workflow calls this function twice a week without login and gets no data back
+CREATE OR REPLACE FUNCTION public.ping()
+RETURNS INTEGER
+LANGUAGE sql
+STABLE
+AS $$
+	SELECT 1;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.ping() TO anon;

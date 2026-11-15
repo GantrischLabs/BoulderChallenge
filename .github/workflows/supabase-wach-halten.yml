@@ -1,5 +1,6 @@
 # Gratis-Projekte bei Supabase pausieren nach 7 Tagen ohne Datenbank-Zugriff.
-# Dieser Job fragt die Datenbank zweimal pro Woche kurz an und hält sie so wach.
+# Dieser Job ruft zweimal pro Woche die Funktion ping() auf und hält die DB so wach.
+# ping() gibt nur «1» zurück – ohne Login sind keine Daten lesbar.
 # Solange config.js leer ist, tut er nichts.
 name: Supabase wach halten
 
@@ -27,7 +28,7 @@ jobs:
               console.log("config.js ist leer – keine Datenbank eingerichtet, nichts zu tun.");
               process.exit(0);
             }
-            fetch(c.supabaseUrl + "/rest/v1/challenges?select=id&limit=1", { method: "GET", headers: { apikey: c.supabaseAnonKey } })
+            fetch(c.supabaseUrl + "/rest/v1/rpc/ping", { method: "POST", headers: { apikey: c.supabaseAnonKey } })
               .then(async r => {
                 console.log("Antwort:", r.status);
                 if (!r.ok) { console.log(await r.text()); process.exit(1); }

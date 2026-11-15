@@ -186,6 +186,7 @@ function istGesperrt() { return isArchived() || nurAnzeige(); }
 function schreibbereit() {
   if (!dbModus()) return true;
   if (BoulderDB.angemeldet() && BoulderDB.wer()) return true;
+  // Angemeldet, aber noch kein Name gewählt → "Wer bist du?"
   oeffneLogin();
   return false;
 }
@@ -1574,80 +1575,189 @@ function wireTabs() {
 
 /* ---------------- Datenbank: Laden, Anmelden, Protokoll ---------------- */
 
-// data.json liefert immer Saisons, Teilnehmer und Archiv.
-// Mit Datenbank kommen die Challenges der laufenden Saisons aus Supabase.
-async function ladeDokument() {
-  const res = await fetch(`data.json?v=${Date.now()}`, { cache: "no-store" });
-  const remote = migrateData(await res.json());
-  const lokal = mergeLocalIntoRemote(remote, loadLocalDoc());
+// Zusätzliche Modi neben "lokal", "db", "db-fehler":
+// "db-login": Datenbank eingerichtet, aber nicht angemeldet → nur Anmeldeseite
+// "db-leer":  angemeldet, Datenbank noch leer → Übernahme aus data.json anbieten
+function leeresDokument() {
+  return { schemaVersion: 2, currentSeasonId: null, seasons: [] };
+}
 
+// Ohne Datenbank: data.json (+ lokale Änderungen) wie bisher.
+// Mit Datenbank: nichts ohne Anmeldung, danach alles aus Supabase.
+async function ladeDokument() {
   if (!BoulderDB.konfiguriert) {
     window.__MODUS__ = "lokal";
-    return lokal;
+    const res = await fetch(`data.json?v=${Date.now()}`, { cache: "no-store" });
+    const remote = migrateData(await res.json());
+    return mergeLocalIntoRemote(remote, loadLocalDoc());
   }
 
-  // Stand aus data.json + diesem Browser, für die einmalige Übernahme
-  window.__JSON_STAND__ = lokal;
+  window.__DB_FEHLER__ = null;
 
   if (!BoulderDB.aktiv) {
     window.__MODUS__ = "db-fehler";
     window.__DB_FEHLER__ = "Supabase-Bibliothek nicht geladen";
-    return remote;
+    return leeresDokument();
+  }
+
+  if (!BoulderDB.angemeldet()) {
+    window.__MODUS__ = "db-login";
+    return leeresDokument();
   }
 
   try {
-    const laufende = (remote.seasons ?? []).filter(s => !s.archived).map(s => s.id);
-    const ausDb = await BoulderDB.ladeChallenges(laufende);
-    window.__MODUS__ = "db";
-    window.__DB_FEHLER__ = null;
-    return {
-      ...remote,
-      seasons: (remote.seasons ?? []).map(s =>
-        s.archived ? s : { ...s, challenges: ausDb[s.id] ?? [] })
-    };
+    const doc = await BoulderDB.ladeAlles();
+    // Saisons ohne Teilnehmer sind Platzhalter aus einer älteren Einrichtung
+    const leer = !doc.seasons.some(s => (s.participants ?? []).length);
+    window.__MODUS__ = leer ? "db-leer" : "db";
+    if (leer) window.__JSON_STAND__ = await ladeJsonStand();
+    return doc;
   } catch (err) {
     console.error(err);
-    window.__MODUS__ = "db-fehler";
-    window.__DB_FEHLER__ = BoulderDB.fehlerText(err);
-    return remote;
+    if (BoulderDB.istAuthFehler(err)) {
+      await BoulderDB.abmelden();
+      window.__MODUS__ = "db-login";
+    } else {
+      window.__MODUS__ = "db-fehler";
+      window.__DB_FEHLER__ = BoulderDB.fehlerText(err);
+    }
+    return leeresDokument();
+  }
+}
+
+// Quelle für die einmalige Übernahme: data.json + lokale Änderungen
+// dieses Browsers. null, wenn data.json schon aus dem Repo entfernt ist.
+async function ladeJsonStand() {
+  try {
+    const res = await fetch(`data.json?v=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    return mergeLocalIntoRemote(migrateData(await res.json()), loadLocalDoc());
+  } catch {
+    return null;
   }
 }
 
 async function neuLaden() {
   const doc = await ladeDokument();
-  computeAndRenderAll(doc);
+  const ids = new Set(doc.seasons.map(s => s.id));
+  if (!ids.has(window.__SEASON_ID__)) window.__SEASON_ID__ = resolveInitialSeasonId(doc);
+  zeige(doc);
+}
+
+// Anmeldeseite oder normale Ansicht
+function zeige(doc) {
+  const gesperrt = ["db-login", "db-leer", "db-fehler"].includes(window.__MODUS__);
+  document.body.classList.toggle("gesperrt", gesperrt);
+  window.__DATA__ = doc;
+  if (gesperrt) {
+    renderSperre();
+    renderDbStatus();
+  } else {
+    computeAndRenderAll(doc);
+  }
+}
+
+function renderSperre() {
+  const el = document.getElementById("loginGate");
+  if (!el) return;
+
+  const titel = document.getElementById("seasonTitle");
+  if (titel) titel.textContent = "Boulder-Challenge";
+  const meta = document.getElementById("seasonMeta");
+  if (meta) meta.textContent = "Privater Wettbewerb";
+  const footer = document.getElementById("footerText");
+  if (footer) footer.textContent = "Privater Wettbewerb · nur mit Gruppen-Passwort";
+
+  let html;
+  if (window.__MODUS__ === "db-login") {
+    html = `
+      <div class="gateIcon">🔒</div>
+      <h2>Privater Wettbewerb</h2>
+      <p class="muted">Rangliste und Resultate sind nur mit dem Gruppen-Passwort sichtbar.</p>
+      <button class="btnPrimary" type="button" data-aktion="login">Anmelden</button>`;
+  } else if (window.__MODUS__ === "db-fehler") {
+    html = `
+      <div class="gateIcon">⚠️</div>
+      <h2>Datenbank nicht erreichbar</h2>
+      <p class="muted">${safeText(window.__DB_FEHLER__ ?? "Unbekannter Fehler")}</p>
+      <button class="btnPrimary" type="button" data-aktion="neu">Neu versuchen</button>`;
+  } else {
+    const quelle = window.__JSON_STAND__;
+    const saisons = quelle?.seasons ?? [];
+    const anzahl = saisons.reduce((n, s) => n + (s.challenges ?? []).length, 0);
+    html = quelle && saisons.length
+      ? `
+      <div class="gateIcon">📦</div>
+      <h2>Datenbank ist noch leer</h2>
+      <p class="muted">${saisons.length} ${plural(saisons.length, "Saison", "Saisons")} mit ${anzahl} Challenges aus
+        <code>data.json</code> übernehmen – inkl. Archiv und lokaler Änderungen in diesem Browser?</p>
+      <button class="btnPrimary" type="button" data-aktion="import">Alles übernehmen</button>`
+      : `
+      <div class="gateIcon">📦</div>
+      <h2>Datenbank ist noch leer</h2>
+      <p class="muted">Keine <code>data.json</code> gefunden, die übernommen werden könnte.</p>`;
+  }
+  el.innerHTML = html;
+
+  el.querySelector("[data-aktion=login]")?.addEventListener("click", oeffneLogin);
+  el.querySelector("[data-aktion=neu]")?.addEventListener("click", () => neuLaden());
+  el.querySelector("[data-aktion=import]")?.addEventListener("click", importiereJsonStand);
+}
+
+async function importiereJsonStand() {
+  const quelle = window.__JSON_STAND__;
+  if (!quelle) return;
+  if (!BoulderDB.wer()) { oeffneLogin(); return; }
+
+  const btn = document.querySelector("#loginGate [data-aktion=import]");
+  if (btn) btn.disabled = true;
+  try {
+    await BoulderDB.importiereAlles(quelle);
+    showToast("Alles übernommen");
+    await neuLaden();
+  } catch (err) {
+    console.error(err);
+    alert(`Übernahme fehlgeschlagen: ${BoulderDB.fehlerText(err)}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function nameVon(pid) {
-  for (const s of (window.__DATA__?.seasons ?? [])) {
-    const p = (s.participants ?? []).find(x => x.id === pid);
-    if (p) return p.name;
+  const quellen = [window.__DATA__, window.__JSON_STAND__];
+  for (const d of quellen) {
+    for (const s of (d?.seasons ?? [])) {
+      const p = (s.participants ?? []).find(x => x.id === pid);
+      if (p) return p.name;
+    }
   }
   return pid ?? "?";
+}
+
+// Teilnehmer für "Wer bist du?": laufende Saison, bei leerer DB aus data.json
+function teilnehmerFuerLogin() {
+  const aktiv = activeParticipants();
+  if (aktiv.length && window.__MODUS__ === "db") return aktiv;
+  const q = window.__JSON_STAND__;
+  const s = (q?.seasons ?? []).find(x => x.id === q?.currentSeasonId) ?? (q?.seasons ?? [])[0];
+  return s?.participants ?? aktiv;
 }
 
 function renderDbStatus() {
   const el = document.getElementById("dbStatus");
   if (!el) return;
 
-  if (window.__MODUS__ === "lokal") { el.hidden = true; return; }
+  // Ohne DB oder auf der Anmeldeseite braucht es den Knopf nicht
+  if (!dbModus()) { el.hidden = true; return; }
   el.hidden = false;
-  el.classList.toggle("dbStatusFehler", nurAnzeige());
-
-  if (nurAnzeige()) {
-    el.textContent = "⚠️ Datenbank nicht erreichbar – nur Anzeige · neu versuchen";
-  } else if (BoulderDB.angemeldet() && BoulderDB.wer()) {
-    el.textContent = `✎ Erfassen als ${nameVon(BoulderDB.wer())} · ändern`;
-  } else {
-    el.textContent = "🔒 Zum Erfassen anmelden";
-  }
+  el.classList.remove("dbStatusFehler");
+  el.textContent = BoulderDB.wer()
+    ? `✎ Erfassen als ${nameVon(BoulderDB.wer())} · ändern`
+    : "👤 Wer bist du? · Namen wählen";
 
   if (!el.dataset.wired) {
     el.dataset.wired = "1";
-    el.addEventListener("click", () => {
-      if (nurAnzeige()) neuLaden();
-      else oeffneLogin();
-    });
+    el.addEventListener("click", oeffneLogin);
   }
 }
 
@@ -1656,21 +1766,23 @@ function oeffneLogin() {
   if (!dlg) return;
 
   const angemeldet = BoulderDB.angemeldet();
-  const participants = activeParticipants();
+  const participants = teilnehmerFuerLogin();
   const sel = document.getElementById("loginWer");
   sel.innerHTML = `<option value="">– bitte wählen –</option>`
     + participants.map(p => `<option value="${safeText(p.id)}">${safeText(p.name)}</option>`).join("");
   sel.value = participants.some(p => p.id === BoulderDB.wer()) ? BoulderDB.wer() : "";
 
-  // Schon angemeldet: nur noch die Person wählen
+  // Schritt 1: nur Passwort (die Namen sind vor der Anmeldung nicht lesbar).
+  // Schritt 2: angemeldet → nur noch die Person wählen.
+  document.getElementById("loginWerFeld").hidden = !angemeldet;
   document.getElementById("loginPwFeld").hidden = angemeldet;
   document.getElementById("loginPw").value = "";
-  document.getElementById("loginTitel").textContent = angemeldet ? "Wer erfasst?" : "Zum Erfassen anmelden";
+  document.getElementById("loginTitel").textContent = angemeldet ? "Wer bist du?" : "Anmelden";
   document.getElementById("loginOk").textContent = angemeldet ? "Übernehmen" : "Anmelden";
   document.getElementById("loginAbmelden").hidden = !angemeldet;
   document.getElementById("loginFehler").hidden = true;
 
-  if (typeof dlg.showModal === "function") dlg.showModal();
+  if (typeof dlg.showModal === "function") { if (!dlg.open) dlg.showModal(); }
   else dlg.setAttribute("open", "");
 }
 
@@ -1693,12 +1805,11 @@ function wireLogin() {
 
   form.addEventListener("submit", async ev => {
     ev.preventDefault();
-    const wer = document.getElementById("loginWer").value;
-    const pw = document.getElementById("loginPw").value;
-    if (!wer) { fehler("Bitte wählen, wer du bist."); return; }
-
     const btn = document.getElementById("loginOk");
+
+    // Schritt 1: Passwort
     if (!BoulderDB.angemeldet()) {
+      const pw = document.getElementById("loginPw").value;
       if (!pw) { fehler("Bitte das Gruppen-Passwort eingeben."); return; }
       btn.disabled = true;
       try {
@@ -1709,25 +1820,33 @@ function wireLogin() {
       } finally {
         btn.disabled = false;
       }
+      schliesseLogin();
+      await neuLaden();
+      // Gleich weiter zu Schritt 2, damit jede Änderung einen Namen trägt
+      if (!BoulderDB.wer() && teilnehmerFuerLogin().length) oeffneLogin();
+      return;
     }
 
+    // Schritt 2: Name
+    const wer = document.getElementById("loginWer").value;
+    if (!wer) { fehler("Bitte wählen, wer du bist."); return; }
     BoulderDB.setzeWer(wer);
     schliesseLogin();
-    computeAndRenderAll(window.__DATA__);
+    zeige(window.__DATA__);
   });
 
   document.getElementById("loginAbbrechen").addEventListener("click", schliesseLogin);
 
   document.getElementById("loginAbmelden").addEventListener("click", async () => {
     await BoulderDB.abmelden();
-    schliesseLogin();
-    computeAndRenderAll(window.__DATA__);
+    // Neu laden statt neu zeichnen: so bleibt nichts von den Daten im Speicher oder im DOM
+    location.reload();
   });
 }
 
 // Admin-Tab: Texte und Bereiche je nach Modus
 function renderAdminModus(season) {
-  const db = window.__MODUS__ !== "lokal";
+  const db = dbModus();
   const hinweis = document.getElementById("admModusHinweis");
   if (hinweis) {
     hinweis.innerHTML = db
@@ -1739,63 +1858,128 @@ function renderAdminModus(season) {
   if (reset) reset.hidden = db;
 
   const titel = document.getElementById("admJsonTitel");
-  if (titel) titel.textContent = db ? "Backup / Saison archivieren (data.json)" : "Vorschau (data.json)";
+  if (titel) titel.textContent = db ? "Backup (alle Daten als JSON)" : "Vorschau (data.json)";
   const tipp = document.getElementById("admJsonTipp");
   if (tipp) {
     tipp.innerHTML = db
-      ? "Zum Archivieren einer Saison: JSON kopieren → in GitHub <code>data.json</code> ersetzen, bei der Saison <code>\"archived\": true</code> setzen → Commit."
+      ? "Zum Sichern herunterladen und privat ablegen – nicht ins öffentliche Repo committen."
       : "Tipp: Alles im Textfeld kopieren → GitHub <code>data.json</code> ersetzen → Commit.";
   }
 
   const footer = document.getElementById("footerText");
   if (footer) {
-    footer.innerHTML = dbModus()
-      ? "Privater Wettbewerb · Live-Daten aus der Datenbank, Archiv aus <code>data.json</code>"
+    footer.innerHTML = db
+      ? "Privater Wettbewerb · Daten in der Datenbank, nur mit Gruppen-Passwort"
       : "Privater Wettbewerb · Daten aus <code>data.json</code>";
   }
 
-  renderImportAngebot(season);
+  renderSaisonVerwaltung();
   renderVerlauf();
 }
 
-// Laufende Saison ist in der DB noch leer, data.json hat aber schon Challenges
-function renderImportAngebot(season) {
-  const block = document.getElementById("admImportBlock");
+/* ---------------- Saisons & Teilnehmer pflegen (nur DB) ---------------- */
+
+// Ersetzt das frühere Bearbeiten von data.json in GitHub:
+// Saisons, Teilnehmer, Archiv-Flag und aktuelle Saison als JSON.
+function saisonMetaJson(doc) {
+  return JSON.stringify({
+    currentSeasonId: doc?.currentSeasonId ?? null,
+    seasons: getSeasons(doc).map(({ challenges, ...meta }) => meta)
+  }, null, 2);
+}
+
+function renderSaisonVerwaltung() {
+  const block = document.getElementById("admSaisonBlock");
   if (!block) return;
+  block.hidden = !dbModus();
+  if (!dbModus()) return;
 
-  const quelle = (window.__JSON_STAND__?.seasons ?? []).find(s => s.id === season?.id);
-  const anzahl = (quelle?.challenges ?? []).length;
-  const zeigen = dbModus() && season && !season.archived
-    && (season.challenges ?? []).length === 0 && anzahl > 0;
+  const ta = document.getElementById("admSaisonJson");
+  // Nicht überschreiben, während jemand darin tippt
+  if (document.activeElement !== ta) ta.value = saisonMetaJson(window.__DATA__);
 
-  block.hidden = !zeigen;
-  if (!zeigen) return;
+  const btn = document.getElementById("admSaisonSpeichern");
+  if (btn.dataset.wired) return;
+  btn.dataset.wired = "1";
 
-  document.getElementById("admImportText").textContent =
-    `Die Datenbank ist für „${season.name}“ noch leer. ${anzahl} ${plural(anzahl, "Challenge", "Challenges")} `
-    + `aus data.json (inkl. lokaler Änderungen in diesem Browser) einmalig übernehmen?`;
+  btn.addEventListener("click", async () => {
+    if (!schreibbereit()) return;
+    let neu;
+    try {
+      neu = pruefeSaisonJson(JSON.parse(ta.value), window.__DATA__);
+    } catch (err) {
+      alert(err instanceof SyntaxError ? `Kein gültiges JSON: ${err.message}` : err.message);
+      return;
+    }
+    if (neu.warnung && !confirm(neu.warnung)) return;
 
-  const btn = document.getElementById("admImport");
-  if (!btn.dataset.wired) {
-    btn.dataset.wired = "1";
-    btn.addEventListener("click", async () => {
-      if (!schreibbereit()) return;
-      const s = window.__SEASON__;
-      const q = (window.__JSON_STAND__?.seasons ?? []).find(x => x.id === s?.id);
-      if (!q) return;
-      btn.disabled = true;
-      try {
-        await BoulderDB.importiereSaison(s.id, q.challenges ?? []);
-        showToast("Saison übernommen");
-        await neuLaden();
-      } catch (err) {
-        console.error(err);
-        alert(`Übernahme fehlgeschlagen: ${BoulderDB.fehlerText(err)}`);
-      } finally {
-        btn.disabled = false;
+    btn.disabled = true;
+    try {
+      await BoulderDB.speichereSaisons(neu.seasons, neu.currentSeasonId);
+      showToast("Saisons gespeichert");
+      ta.blur();
+      await neuLaden();
+    } catch (err) {
+      console.error(err);
+      alert(`Nicht gespeichert: ${BoulderDB.fehlerText(err)}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("admSaisonZuruecksetzen").addEventListener("click", () => {
+    ta.value = saisonMetaJson(window.__DATA__);
+  });
+}
+
+function pruefeSaisonJson(obj, doc) {
+  const seasons = obj?.seasons;
+  if (!Array.isArray(seasons) || !seasons.length) throw new Error("\"seasons\" muss eine Liste mit mindestens einer Saison sein.");
+
+  const ids = new Set();
+  for (const s of seasons) {
+    if (!s || typeof s.id !== "string" || !s.id.trim()) throw new Error("Jede Saison braucht eine \"id\".");
+    if (ids.has(s.id)) throw new Error(`Saison "${s.id}" kommt doppelt vor.`);
+    ids.add(s.id);
+    if (typeof s.name !== "string" || !s.name.trim()) throw new Error(`Saison "${s.id}" braucht einen "name".`);
+    if (!Array.isArray(s.participants)) throw new Error(`Saison "${s.id}": "participants" muss eine Liste sein.`);
+    const pids = new Set();
+    for (const p of s.participants) {
+      if (!p || typeof p.id !== "string" || !p.id.trim() || typeof p.name !== "string" || !p.name.trim()) {
+        throw new Error(`Saison "${s.id}": jeder Teilnehmer braucht "id" und "name".`);
       }
-    });
+      if (pids.has(p.id)) throw new Error(`Saison "${s.id}": Teilnehmer "${p.id}" kommt doppelt vor.`);
+      pids.add(p.id);
+    }
   }
+
+  // Saisons hängen an ihren Challenges: nicht löschen, nicht umbenennen
+  const fehlend = (doc?.seasons ?? []).filter(s => !ids.has(s.id)).map(s => s.id);
+  if (fehlend.length) {
+    throw new Error(`Saison ${fehlend.join(", ")} fehlt. Saisons können nicht gelöscht oder umbenannt werden – nur neue dazukommen.`);
+  }
+
+  if (obj.currentSeasonId != null && !ids.has(obj.currentSeasonId)) {
+    throw new Error(`"currentSeasonId" "${obj.currentSeasonId}" gibt es nicht.`);
+  }
+
+  // Teilnehmer mit Resultaten entfernt? Die Resultate bleiben gespeichert, werden aber nicht mehr angezeigt.
+  const weg = [];
+  for (const alt of (doc?.seasons ?? [])) {
+    const neu = seasons.find(s => s.id === alt.id);
+    const bleiben = new Set(neu.participants.map(p => p.id));
+    const mitResultat = new Set((alt.challenges ?? []).flatMap(c =>
+      Object.entries(c.results ?? {}).filter(([, r]) => (r?.status ?? "open") !== "open").map(([pid]) => pid)));
+    for (const pid of mitResultat) if (!bleiben.has(pid)) weg.push(`${pid} (${alt.name})`);
+  }
+
+  return {
+    seasons,
+    currentSeasonId: obj.currentSeasonId ?? null,
+    warnung: weg.length
+      ? `Entfernte Teilnehmer mit Resultaten: ${weg.join(", ")}.\nIhre Resultate bleiben gespeichert, werden aber nicht mehr angezeigt. Trotzdem speichern?`
+      : null
+  };
 }
 
 function fmtZeitpunkt(ts) {
@@ -1812,6 +1996,26 @@ function verlaufText(e) {
   const season = (window.__DATA__?.seasons ?? []).find(s => s.id === e.season_id);
   const ch = (season?.challenges ?? []).find(c => c.id === e.challenge_id);
   const chName = ch ? (getWeekLabel(ch) || fmtDateDE(ch.date)) : fmtDateDE(e.challenge_id);
+
+  if (e.table_name === "settings") {
+    return e.new_data?.key === "currentSeasonId"
+      ? `Aktuelle Saison: ${e.old_data?.value ?? "–"} → ${e.new_data?.value ?? "–"}`
+      : `Einstellung ${e.new_data?.key ?? ""} geändert`;
+  }
+
+  if (e.table_name === "seasons") {
+    const name = neu.data?.name ?? alt.data?.name ?? e.season_id;
+    if (e.action === "INSERT") return `Saison „${name}“ angelegt`;
+    const a = alt.data ?? {}, n = neu.data ?? {};
+    const tn = x => (x.participants ?? []).map(p => p.name).join(", ");
+    const diffs = [];
+    if (tn(a) !== tn(n)) diffs.push(`Teilnehmer ${tn(a) || "–"} → ${tn(n) || "–"}`);
+    if (!!a.archived !== !!n.archived) diffs.push(n.archived ? "archiviert" : "wieder aktiv");
+    for (const [k, l] of [["name", "Name"], ["shortName", "Kurzname"], ["start", "Start"], ["totalChallenges", "Anzahl"]]) {
+      if (String(a[k] ?? "") !== String(n[k] ?? "")) diffs.push(`${l} ${a[k] ?? "–"} → ${n[k] ?? "–"}`);
+    }
+    return `Saison „${name}“ geändert: ${diffs.join(", ") || "–"}`;
+  }
 
   if (e.table_name === "results") {
     const icon = r => statusToIcon(r?.status ?? "open", r?.when_type ?? "", false);
@@ -1879,13 +2083,13 @@ async function main() {
   const doc = await ladeDokument();
 
   window.__SEASON_ID__ = resolveInitialSeasonId(doc);
-  computeAndRenderAll(doc);
+  zeige(doc);
 
   // Zurück in die App (z.B. nach dem Bouldern): frischen Stand holen,
   // damit man sieht, was die anderen inzwischen erfasst haben
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
-    if (window.__MODUS__ === "lokal" || window.__editingChallengeId) return;
+    if (["lokal", "db-login"].includes(window.__MODUS__) || window.__editingChallengeId) return;
     neuLaden().catch(err => console.error(err));
   });
 }
@@ -1893,5 +2097,5 @@ async function main() {
 main().catch(err => {
   console.error(err);
   const el = document.getElementById("challenges");
-  if (el) el.innerHTML = `<p class="muted">Fehler beim Laden von <code>data.json</code>.</p>`;
+  if (el) el.innerHTML = `<p class="muted">Fehler beim Laden der Daten.</p>`;
 });

@@ -2,9 +2,10 @@
    Datenbank-Schicht (Supabase)
 
    Nur aktiv, wenn config.js ausgefüllt ist. Dann gilt:
-   - Laufende Saisons: Challenges + Ergebnisse kommen aus der DB.
-   - Archivierte Saisons, Teilnehmer, Saison-Metadaten: data.json.
-   - Lesen darf jeder, schreiben nur mit dem Gruppen-Passwort.
+   - Alles liegt in der DB: Saisons, Teilnehmer, Archiv,
+     Challenges, Ergebnisse. data.json dient nur noch der
+     einmaligen Übernahme.
+   - Lesen und Schreiben nur mit dem Gruppen-Passwort.
    - Jede Änderung trägt den Namen aus "Wer bist du?" und landet
      per Trigger im Änderungsprotokoll (change_log).
    ============================================================ */
@@ -101,30 +102,37 @@ const BoulderDB = (() => {
 
   /* ---------------- Lesen ---------------- */
 
-  // Liefert { seasonId: [challenges im data.json-Format] }
-  async function ladeChallenges(seasonIds) {
-    if (!seasonIds.length) return {};
-
-    const [ch, rs] = await Promise.all([
-      client.from("challenges").select("*").in("season_id", seasonIds),
-      client.from("results").select("*").in("season_id", seasonIds)
+  // Ganzes Dokument im data.json-Format:
+  // { schemaVersion, currentSeasonId, seasons: [{ ...meta, challenges }] }
+  async function ladeAlles() {
+    const [se, st, ch, rs] = await Promise.all([
+      client.from("seasons").select("id, data"),
+      client.from("settings").select("key, value"),
+      client.from("challenges").select("*"),
+      client.from("results").select("*")
     ]);
-    if (ch.error) throw ch.error;
-    if (rs.error) throw rs.error;
+    for (const r of [se, st, ch, rs]) if (r.error) throw r.error;
 
-    const proSaison = Object.fromEntries(seasonIds.map(id => [id, []]));
+    const settings = Object.fromEntries((st.data ?? []).map(r => [r.key, r.value]));
+    const seasons = (se.data ?? []).map(r => ({ ...(r.data ?? {}), id: r.id, challenges: [] }));
+    const nachSaison = new Map(seasons.map(x => [x.id, x]));
     const nachSchluessel = new Map();
 
     for (const row of ch.data ?? []) {
       const c = zuChallenge(row);
-      (proSaison[row.season_id] ??= []).push(c);
+      nachSaison.get(row.season_id)?.challenges.push(c);
       nachSchluessel.set(`${row.season_id}|${row.id}`, c);
     }
     for (const row of rs.data ?? []) {
       const c = nachSchluessel.get(`${row.season_id}|${row.challenge_id}`);
       if (c) c.results[row.participant_id] = { status: row.status, when: row.when_type ?? "" };
     }
-    return proSaison;
+
+    return {
+      schemaVersion: 2,
+      currentSeasonId: settings.currentSeasonId ?? null,
+      seasons
+    };
   }
 
   async function ladeVerlauf(limit = 50) {
@@ -150,7 +158,8 @@ const BoulderDB = (() => {
 
   function speichereErgebnis(...args) { return inReihe(() => _speichereErgebnis(...args)); }
   function speichereChallenge(...args) { return inReihe(() => _speichereChallenge(...args)); }
-  function importiereSaison(...args) { return inReihe(() => _importiereSaison(...args)); }
+  function speichereSaisons(...args) { return inReihe(() => _speichereSaisons(...args)); }
+  function importiereAlles(...args) { return inReihe(() => _importiereAlles(...args)); }
 
   async function _speichereErgebnis(seasonId, chId, pid, res) {
     const { error } = await client.from("results").upsert({
@@ -191,19 +200,49 @@ const BoulderDB = (() => {
     }
   }
 
-  // Einmalige Übernahme einer laufenden Saison aus data.json
-  async function _importiereSaison(seasonId, challenges) {
-    const zeilen = challenges.map(ch => challengeZeile(seasonId, ch));
-    if (!zeilen.length) return;
-
-    const { error } = await client.from("challenges").insert(zeilen);
-    if (error) throw error;
-
-    const ergebnisse = challenges.flatMap(ch => ergebnisZeilen(seasonId, ch));
-    if (ergebnisse.length) {
-      const { error: e2 } = await client.from("results").upsert(ergebnisse);
-      if (e2) throw e2;
+  // Saison-Metadaten (Name, Teilnehmer, Archiv-Flag …) und aktuelle Saison.
+  // Saisons werden nie gelöscht, nur angelegt oder geändert.
+  async function _speichereSaisons(seasons, currentSeasonId) {
+    const zeilen = seasons.map(x => {
+      const { challenges, ...meta } = x;
+      return { id: x.id, data: meta, changed_by: wer() };
+    });
+    if (zeilen.length) {
+      const { error } = await client.from("seasons").upsert(zeilen);
+      if (error) throw error;
     }
+    const { error } = await client.from("settings").upsert({
+      key: "currentSeasonId",
+      value: currentSeasonId ?? null,
+      changed_by: wer()
+    });
+    if (error) throw error;
+  }
+
+  // Einmalige Übernahme von data.json (inkl. Archiv). Upsert statt Insert:
+  // ein abgebrochener Versuch lässt sich einfach wiederholen.
+  async function _importiereAlles(doc) {
+    const seasons = doc?.seasons ?? [];
+    await _speichereSaisons(seasons, doc?.currentSeasonId);
+
+    const challenges = seasons.flatMap(x => (x.challenges ?? []).map(ch => challengeZeile(x.id, ch)));
+    if (challenges.length) {
+      const { error } = await client.from("challenges").upsert(challenges);
+      if (error) throw error;
+    }
+
+    const ergebnisse = seasons.flatMap(x => (x.challenges ?? []).flatMap(ch => ergebnisZeilen(x.id, ch)));
+    if (ergebnisse.length) {
+      const { error } = await client.from("results").upsert(ergebnisse);
+      if (error) throw error;
+    }
+  }
+
+  // Abgelaufene oder fehlende Anmeldung
+  function istAuthFehler(err) {
+    const code = String(err?.code ?? "");
+    const msg = String(err?.message ?? err ?? "");
+    return code === "42501" || code === "PGRST301" || /row-level security|permission denied|JWT/i.test(msg);
   }
 
   // Verständliche Meldung für die häufigsten Fehler
@@ -212,7 +251,7 @@ const BoulderDB = (() => {
     const msg = String(err?.message ?? err ?? "");
     if (code === "23505") return "Für dieses Datum gibt es schon eine Challenge.";
     if (/invalid login credentials/i.test(msg)) return "Passwort falsch.";
-    if (code === "42501" || /row-level security|permission denied|JWT/i.test(msg)) {
+    if (istAuthFehler(err)) {
       return "Keine Berechtigung – bitte neu anmelden.";
     }
     if (/fetch|network|Failed to/i.test(msg)) {
@@ -224,8 +263,8 @@ const BoulderDB = (() => {
   return {
     konfiguriert, aktiv,
     init, angemeldet, wer, setzeWer, anmelden, abmelden,
-    ladeChallenges, ladeVerlauf,
-    speichereErgebnis, speichereChallenge, importiereSaison,
-    fehlerText
+    ladeAlles, ladeVerlauf,
+    speichereErgebnis, speichereChallenge, speichereSaisons, importiereAlles,
+    istAuthFehler, fehlerText
   };
 })();

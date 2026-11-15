@@ -1145,3 +1145,28 @@ code{
 .verlaufWann{ color: var(--muted); font-variant-numeric: tabular-nums; }
 .verlaufWer{ font-weight: 600; }
 .verlaufWas{ min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- Anmeldeseite (Datenbank ohne Login) ---- */
+.loginGate{ display: none; }
+body.gesperrt .loginGate{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 28px 0;
+  padding: 28px 20px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.loginGate h2{ margin: 0; font-size: 18px; }
+.loginGate p{ margin: 0; max-width: 34ch; }
+.loginGate .btnPrimary{ margin-top: 8px; min-width: 160px; }
+.gateIcon{ font-size: 34px; line-height: 1; }
+body.gesperrt .tabBar,
+body.gesperrt .tabPanel,
+body.gesperrt .seasonBar,
+body.gesperrt #statStrip,
+body.gesperrt #seasonSelect,
+body.gesperrt #archiveBadge{ display: none !important; }
