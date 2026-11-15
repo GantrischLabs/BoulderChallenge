@@ -27,8 +27,8 @@ Alles liegt in Supabase: Saisons, Teilnehmer, Archiv, Challenges, Resultate und 
    - E-Mail: eine beliebige Adresse, z.B. Deine eigene mit Zusatz (`du+boulder@…`). Es werden keine Mails verschickt.
    - Passwort: das **Gruppen-Passwort**, das Du den anderen gibst. Wähle ein gutes, die App ist öffentlich erreichbar.
    - *Auto Confirm User* aktivieren.
-5. **App verbinden:** Unter **Project Settings → API Keys** die **Project URL** und den **anon / publishable** Key kopieren und in [`config.js`](../config.js) eintragen, dazu die E-Mail des Gruppen-Kontos. Committen.
-   - Der anon/publishable Key darf öffentlich sein: Ohne Passwort bekommt man damit nichts. Den **service_role / secret** Key **nie** eintragen.
+5. **App verbinden:** Die **Project URL** (unter **Project Settings → Data API**, Form `https://<projekt-id>.supabase.co`) und den **Publishable Key** (unter **Project Settings → API Keys**, beginnt mit `sb_publishable_`) in [`config.js`](../config.js) eintragen, dazu die E-Mail des Gruppen-Kontos. Committen.
+   - Der Publishable Key darf öffentlich sein: Ohne Passwort bekommt man damit nichts. Den **Secret Key** (`sb_secret_…`) und die alten Legacy-Keys (`anon`, `service_role`) **nicht** verwenden – die alten werden Ende 2026 abgeschaltet, der Secret Key umgeht alle Rechte.
 6. **Daten übernehmen:** App öffnen → mit dem Gruppen-Passwort anmelden → Namen wählen → **Alles übernehmen**.
    - Damit werden alle Saisons inkl. Archiv aus `data.json` kopiert.
    - Am besten auf dem Gerät, auf dem zuletzt erfasst wurde: Lokale, noch nicht committete Änderungen werden mit übernommen.
