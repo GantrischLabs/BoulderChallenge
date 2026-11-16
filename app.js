@@ -1010,6 +1010,127 @@ function teamPunkte(doc, season) {
   };
 }
 
+// Badges: alle aus den vorhandenen Resultaten berechnet, nichts wird gespeichert.
+// "wert" ist je nach Badge eine Serie oder eine Anzahl; verdient ist ein Badge
+// ab "ab". "zeigeWert" steuert, ob die Zahl immer dasteht (Serien) oder erst
+// ab zwei (Anzahl).
+const BADGES = [
+  { id: "stammgast",  icon: "🎯", name: "Stammgast",    ab: 5, zeigeWert: true,
+    regel: "5 Challenges in Folge live dabei, also am Tag selbst und nicht nachgeholt. Die Zahl ist die längste Serie." },
+  { id: "lueckenlos", icon: "💯", name: "Lückenlos",    ab: 1, zeigeWert: false,
+    regel: "Bei jeder Challenge der Saison live dabei (ab 5 Challenges)." },
+  { id: "hattrick",   icon: "🔥", name: "Hattrick",     ab: 3, zeigeWert: true,
+    regel: "3 Erfolge in Folge. Die Zahl ist die längste Serie." },
+  { id: "alleingang", icon: "🦅", name: "Alleingang",   ab: 1, zeigeWert: false,
+    regel: "Als Einzige:r eine Route geschafft, die mindestens 3 versucht haben." },
+  { id: "achter",     icon: "💪", name: "8er-Sammler",  ab: 5, zeigeWert: true,
+    regel: "5 Routen ab Grad 8 geschafft. Die Zahl ist die Anzahl." },
+  { id: "gipfel",     icon: "⛰️", name: "Gipfelstürmer", ab: 1, zeigeWert: false,
+    regel: "Eine Route mit Grad 9 geschafft." },
+  { id: "uebertroffen", icon: "📈", name: "Übertroffen", ab: 1, zeigeWert: false,
+    regel: "Mehr Routen ab Grad 8 geschafft als in der ganzen Vorsaison." },
+  { id: "comeback",   icon: "⏳", name: "Comeback",     ab: 1, zeigeWert: false,
+    regel: "Eine Route beim Nachholen geschafft." },
+  { id: "fair",       icon: "⚖️", name: "Faire Route",  ab: 1, zeigeWert: false,
+    regel: "Eigene Route, die etwa die Hälfte geschafft hat (40 bis 60 %, bei mindestens 3 Versuchen)." },
+  { id: "unbezwungen", icon: "🧱", name: "Unbezwungen", ab: 1, zeigeWert: false,
+    regel: "Eigene Route, die niemand geschafft hat (bei mindestens 3 Versuchen)." },
+  { id: "eigentor",   icon: "🙈", name: "Eigentor",     ab: 1, zeigeWert: false,
+    regel: "Die eigene Route selbst nicht geschafft." }
+];
+
+const TEAM_BADGES = [
+  { id: "vollesHaus", icon: "🏠", name: "Volles Haus",
+    regel: "Alle waren am Tag selbst dabei." },
+  { id: "alleOben",   icon: "🎉", name: "Alle oben",
+    regel: "Alle haben die Route geschafft." }
+];
+
+function badges(doc, season) {
+  const teilnehmer = season?.participants ?? [];
+  const challenges = [...(season?.challenges ?? [])].sort(byOldestFirst);
+  if (!teilnehmer.length || !challenges.length) return null;
+
+  const res = (ch, id) => (ch.results ?? {})[id] ?? {};
+  const versucht = r => r.status === "success" || r.status === "fail";
+  // Anwesend ist, wer ein Resultat hat, das nicht nachgeholt wurde
+  const live = r => versucht(r) && r.when !== "makeup";
+  const abAcht = ch => ch.grade != null && Number(ch.grade) >= 8;
+
+  // Längste Serie; "neutral" überspringt eine Challenge, ohne die Serie zu brechen
+  const laengsteSerie = (zaehlt, neutral = () => false) => {
+    let beste = 0, lauf = 0;
+    for (const ch of challenges) {
+      if (neutral(ch)) continue;
+      lauf = zaehlt(ch) ? lauf + 1 : 0;
+      if (lauf > beste) beste = lauf;
+    }
+    return beste;
+  };
+
+  const ids = teilnehmer.map(p => p.id);
+  const proChallenge = new Map(challenges.map(ch => [ch, {
+    versuche: ids.filter(id => versucht(res(ch, id))).length,
+    erfolge: ids.filter(id => res(ch, id).status === "success").length,
+    live: ids.filter(id => live(res(ch, id))).length
+  }]));
+
+  const vorher = vorherigeSaison(doc, season);
+
+  const personen = teilnehmer.map(p => {
+    const erfolg = ch => res(ch, p.id).status === "success";
+    const eigene = challenges.filter(ch => ch.setBy === p.id);
+    const achterJetzt = challenges.filter(ch => abAcht(ch) && erfolg(ch)).length;
+
+    const warDabei = (vorher?.participants ?? []).some(x => x.id === p.id);
+    const achterVorher = warDabei
+      ? (vorher.challenges ?? []).filter(ch => abAcht(ch) && res(ch, p.id).status === "success").length
+      : null;
+
+    const werte = {
+      stammgast: laengsteSerie(ch => live(res(ch, p.id))),
+      lueckenlos: (challenges.length >= 5 && challenges.every(ch => live(res(ch, p.id)))) ? 1 : 0,
+      // Noch nicht versuchte Challenges brechen die Erfolgsserie nicht
+      hattrick: laengsteSerie(erfolg, ch => !versucht(res(ch, p.id))),
+      alleingang: challenges.filter(ch => {
+        const c = proChallenge.get(ch);
+        return erfolg(ch) && c.erfolge === 1 && c.versuche >= 3;
+      }).length,
+      achter: achterJetzt,
+      gipfel: challenges.filter(ch => Number(ch.grade) === 9 && erfolg(ch)).length,
+      uebertroffen: (achterVorher !== null && achterJetzt > achterVorher) ? 1 : 0,
+      comeback: challenges.filter(ch => erfolg(ch) && res(ch, p.id).when === "makeup").length,
+      fair: eigene.filter(ch => {
+        const c = proChallenge.get(ch);
+        return c.versuche >= 3 && Math.abs(c.erfolge / c.versuche - 0.5) <= 0.1 + 1e-9;
+      }).length,
+      unbezwungen: eigene.filter(ch => {
+        const c = proChallenge.get(ch);
+        return c.versuche >= 3 && c.erfolge === 0;
+      }).length,
+      eigentor: eigene.filter(ch => res(ch, p.id).status === "fail").length
+    };
+
+    return {
+      id: p.id,
+      name: p.name,
+      werte,
+      verdient: BADGES.filter(b => werte[b.id] >= b.ab).map(b => ({ ...b, wert: werte[b.id] }))
+    };
+  });
+
+  const teamWerte = {
+    vollesHaus: challenges.filter(ch => proChallenge.get(ch).live === ids.length).length,
+    alleOben: challenges.filter(ch => proChallenge.get(ch).erfolge === ids.length).length
+  };
+
+  return {
+    personen,
+    team: TEAM_BADGES.filter(b => teamWerte[b.id] > 0).map(b => ({ ...b, wert: teamWerte[b.id] })),
+    teamWerte
+  };
+}
+
 /* ---------------- Gesamtrender ---------------- */
 
 function computeAndRenderAll(doc) {
@@ -1043,6 +1164,7 @@ function computeAndRenderAll(doc) {
   renderSeasonHeader(doc, season, allChallenges, leaderboard, now);
   renderLeaderboardMatrix(leaderboard, challengesAsc, participants, pidToName, pidToColor, now);
   renderTeamPunkte(doc, season, pidToColor);
+  renderBadges(doc, season, pidToColor);
   renderAnalysis(doc, season, pidToColor);
   renderChallenges(challengesDesc, participants, pidToName, pidToColor, now, readOnly);
   renderAdmin(doc, season, participants);
@@ -1258,6 +1380,51 @@ function renderTeamPunkte(doc, season, pidToColor) {
         ${gradZeilen}
       </div>` : ""}
       <p class="muted tpHint">Punkte = Grad × Anzahl Erfolge.${hatZiel ? ` Ziel ist das Total der Saison ${safeText(t.vorsaison)} von denselben Teilnehmern.` : ""} ${hinweise.join(" ")}</p>
+    </div>`;
+}
+
+function renderBadges(doc, season, pidToColor) {
+  const el = document.getElementById("badges");
+  if (!el) return;
+
+  const b = badges(doc, season);
+  if (!b) { el.innerHTML = ""; return; }
+
+  // Serien zeigen ihre Länge immer, Anzahlen erst ab zwei
+  const chip = (x, immerWert) => {
+    const zahl = immerWert ? ` <b>${x.wert}</b>` : (x.wert > 1 ? ` <b>×${x.wert}</b>` : "");
+    return `<span class="bdChip" title="${safeText(x.regel)}"><span class="bdIcon">${x.icon}</span>${safeText(x.name)}${zahl}</span>`;
+  };
+
+  const teamZeile = b.team.length ? `
+      <div class="bdRow">
+        <div class="bdName bdNameTeam">Team</div>
+        <div class="bdChips">${b.team.map(x => chip(x, false)).join("")}</div>
+      </div>` : "";
+
+  const zeilen = b.personen.map(p => `
+      <div class="bdRow" style="--pColor:${pidToColor[p.id] ?? "#38bdf8"}">
+        <div class="bdName">${safeText(p.name)}</div>
+        <div class="bdChips">${p.verdient.length
+          ? p.verdient.map(x => chip(x, x.zeigeWert)).join("")
+          : `<span class="bdLeer">noch keins</span>`}</div>
+      </div>`).join("");
+
+  const legende = [...BADGES, ...TEAM_BADGES].map(x => `
+        <div class="bdRegel"><span class="bdIcon">${x.icon}</span><span><b>${safeText(x.name)}</b> – ${safeText(x.regel)}</span></div>`).join("");
+
+  // Offen lassen, wenn die Legende vor dem Neuzeichnen offen war
+  const warOffen = !!el.querySelector(".bdLegende")?.open;
+
+  el.innerHTML = `
+    <div class="tpCard bdCard">
+      <div class="tpKopf"><span class="tpTitel">Badges</span></div>
+      <div class="bdListe">${zeilen}${teamZeile}</div>
+      <details class="bdLegende"${warOffen ? " open" : ""}>
+        <summary>Was bedeuten die Badges?</summary>
+        <div class="bdRegeln">${legende}</div>
+        <p class="muted tpHint">Badges gelten für die gewählte Saison und werden aus den Resultaten berechnet. Ändert sich ein Resultat, ändern sie sich mit.</p>
+      </details>
     </div>`;
 }
 

@@ -668,6 +668,74 @@ code{
   .tpGrad{ grid-template-columns: 24px 1fr 46px 100px; gap: 6px; font-size: 11px; }
 }
 
+/* ---- Badges ---- */
+.bdListe{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.bdRow{
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.bdName{
+  flex: 0 0 40px;
+  padding-top: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--pColor, var(--muted));
+}
+.bdNameTeam{ color: var(--muted); }
+.bdChips{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.bdChip{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.02);
+  font-size: 11.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.bdChip b{ font-weight: 700; color: var(--muted); }
+.bdIcon{ font-size: 13px; line-height: 1; }
+.bdLeer{ padding-top: 5px; font-size: 11.5px; color: var(--muted); }
+
+.bdLegende{
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.bdLegende summary{
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.bdRegeln{
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+}
+.bdRegel{
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.bdRegel b{ color: var(--text); }
+.bdRegel .bdIcon{ flex: 0 0 18px; text-align: center; padding-top: 1px; }
+
 /* ---- Matrix (ausklappbar) ---- */
 .matrixToggle{
   background: none;
