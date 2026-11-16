@@ -950,6 +950,66 @@ function saisonVergleich(doc, season) {
   };
 }
 
+// Team-Punkte: Grad × Anzahl Erfolge, über alle Teilnehmer zusammengezählt.
+// Ziel ist das Total der Vorsaison – aber nur von jenen, die auch jetzt
+// dabei sind, sonst jagt ein kleineres Team die Punkte eines grösseren.
+// Challenges ohne Grad geben keine Punkte.
+function teamPunkte(doc, season) {
+  const teilnehmer = season?.participants ?? [];
+  if (!teilnehmer.length) return null;
+
+  const vorher = vorherigeSaison(doc, season);
+  const vorherIds = new Set((vorher?.participants ?? []).map(p => p.id));
+  const gemeinsam = teilnehmer.filter(p => vorherIds.has(p.id)).map(p => p.id);
+  const neu = teilnehmer.filter(p => !vorherIds.has(p.id)).map(p => p.name);
+
+  const erfolgeVon = (ch, ids) =>
+    ids.filter(id => ((ch.results ?? {})[id] ?? {}).status === "success").length;
+  const punkteVon = (challenges, ids) =>
+    challenges.reduce((sum, ch) => sum + Number(ch.grade) * erfolgeVon(ch, ids), 0);
+
+  const jetztMitGrad = mitGradVon(season);
+  const vorherMitGrad = mitGradVon(vorher);
+  const alleIds = teilnehmer.map(p => p.id);
+
+  const proPerson = teilnehmer.map(p => ({
+    id: p.id,
+    name: p.name,
+    punkte: punkteVon(jetztMitGrad, [p.id])
+  }));
+  const punkte = proPerson.reduce((sum, p) => sum + p.punkte, 0);
+
+  // Ohne gemeinsame Teilnehmer gibt es nichts Vergleichbares
+  const ziel = (vorher && gemeinsam.length) ? punkteVon(vorherMitGrad, gemeinsam) : null;
+
+  const gespielt = (season?.challenges ?? []).length;
+  const offen = Math.max(0, (season?.totalChallenges ?? 0) - gespielt);
+
+  // Erfolge pro Grad, jetzt gegen die ganze Vorsaison
+  const grade = [...new Set([...jetztMitGrad, ...vorherMitGrad].map(c => Number(c.grade)))]
+    .sort((a, b) => b - a);
+  const proGrad = grade.map(g => ({
+    grad: g,
+    jetzt: jetztMitGrad.filter(c => Number(c.grade) === g)
+      .reduce((sum, ch) => sum + erfolgeVon(ch, alleIds), 0),
+    vorher: ziel === null ? null : vorherMitGrad.filter(c => Number(c.grade) === g)
+      .reduce((sum, ch) => sum + erfolgeVon(ch, gemeinsam), 0)
+  })).filter(z => z.jetzt > 0 || (z.vorher ?? 0) > 0);
+
+  return {
+    punkte,
+    ziel,
+    proPerson,
+    proGrad,
+    gespielt,
+    offen,
+    vorsaison: vorher ? (vorher.shortName ?? vorher.name) : null,
+    neu: ziel === null ? [] : neu,
+    ohneGrad: gespielt - jetztMitGrad.length,
+    vorherOhneGrad: ziel === null ? 0 : (vorher.challenges ?? []).length - vorherMitGrad.length
+  };
+}
+
 /* ---------------- Gesamtrender ---------------- */
 
 function computeAndRenderAll(doc) {
@@ -982,6 +1042,7 @@ function computeAndRenderAll(doc) {
   renderSeasonSwitcher(doc, season);
   renderSeasonHeader(doc, season, allChallenges, leaderboard, now);
   renderLeaderboardMatrix(leaderboard, challengesAsc, participants, pidToName, pidToColor, now);
+  renderTeamPunkte(doc, season, pidToColor);
   renderAnalysis(doc, season, pidToColor);
   renderChallenges(challengesDesc, participants, pidToName, pidToColor, now, readOnly);
   renderAdmin(doc, season, participants);
@@ -1100,6 +1161,103 @@ function renderPunkteZeile(v) {
     <div class="pvBlock">
       <div class="pvLead">Punkte nach ${v.anzahl} ${plural(v.anzahl, "Challenge", "Challenges")} – in Klammern der Stand von ${safeText(v.vorsaison)} zum selben Zeitpunkt.${gekuerzt}</div>
       <div class="pvRow">${teile}</div>
+    </div>`;
+}
+
+// Eine Dezimale, aber ohne ",0"
+function fmtSchnitt(x) {
+  return (Math.round(x * 10) / 10).toLocaleString("de-CH", { maximumFractionDigits: 1 });
+}
+
+function renderTeamPunkte(doc, season, pidToColor) {
+  const el = document.getElementById("teamPunkte");
+  if (!el) return;
+
+  const t = teamPunkte(doc, season);
+  // Ohne erfasste Grade gibt es keine Punkte zu zeigen
+  if (!t || (season?.challenges ?? []).length === t.ohneGrad) { el.innerHTML = ""; return; }
+
+  const hatZiel = t.ziel !== null && t.ziel > 0;
+  const geschafft = hatZiel && t.punkte >= t.ziel;
+  // Der Balken reicht bis zum Ziel – oder darüber hinaus, wenn es geknackt ist
+  const skala = hatZiel ? Math.max(t.ziel, t.punkte) : t.punkte;
+
+  const segmente = t.proPerson.filter(p => p.punkte > 0).map(p => `
+      <span class="tpSeg" style="width:${(p.punkte / skala) * 100}%; --pColor:${pidToColor[p.id] ?? "#38bdf8"}"
+            title="${safeText(p.name)}: ${p.punkte}"></span>`).join("");
+
+  const marke = (geschafft && t.punkte > t.ziel)
+    ? `<span class="tpMarke" style="left:${(t.ziel / skala) * 100}%" title="${safeText(t.vorsaison)}: ${t.ziel}"></span>`
+    : "";
+
+  const legende = t.proPerson.map(p => `
+      <span class="tpPerson" style="--pColor:${pidToColor[p.id] ?? "#38bdf8"}">
+        <span class="tpDot"></span>${safeText(p.name)} <b>${p.punkte}</b>
+      </span>`).join("");
+
+  let stand = "";
+  if (hatZiel) {
+    if (geschafft) {
+      const plus = t.punkte - t.ziel;
+      stand = plus > 0
+        ? `<b class="tpOk">Ziel geknackt</b> – ${plus} ${plural(plus, "Punkt", "Punkte")} über der Saison ${safeText(t.vorsaison)}.`
+        : `<b class="tpOk">Ziel erreicht</b> – gleichauf mit der Saison ${safeText(t.vorsaison)}.`;
+    } else {
+      const fehlt = t.ziel - t.punkte;
+      stand = `Noch <b>${fehlt}</b> ${plural(fehlt, "Punkt", "Punkte")} bis zum Total der Saison ${safeText(t.vorsaison)}.`;
+      // Tempo nur zeigen, wenn die Saison eine geplante Länge hat
+      if (t.offen > 0 && t.gespielt > 0) {
+        stand += ` Bisher Ø ${fmtSchnitt(t.punkte / t.gespielt)} pro Challenge, nötig Ø ${fmtSchnitt(fehlt / t.offen)} in den ${t.offen} offenen.`;
+      }
+    }
+  }
+
+  const gradZeilen = t.proGrad.map(z => {
+    // Ohne Ziel gibt es auch pro Grad keine Messlatte
+    const vor = hatZiel ? z.vorher : null;
+    let status = "";
+    let cls = "";
+    if (vor !== null) {
+      if (z.jetzt > vor) { status = `+${z.jetzt - vor} über Vorsaison`; cls = "tpGradOk"; }
+      else if (z.jetzt === vor) { status = "gleichauf"; cls = "tpGradOk"; }
+      else { status = `noch ${vor - z.jetzt}`; }
+    }
+    const max = Math.max(z.jetzt, vor ?? 0, 1);
+    return `
+      <div class="tpGrad ${cls}">
+        <span class="tpGradNr">${z.grad}er</span>
+        <span class="tpGradBar"><span style="width:${(z.jetzt / max) * 100}%"></span></span>
+        <span class="tpGradZahl"><b>${z.jetzt}</b>${vor !== null ? ` / ${vor}` : ""}</span>
+        <span class="tpGradStatus">${status}</span>
+      </div>`;
+  }).join("");
+
+  const hinweise = [];
+  if (t.neu.length) {
+    hinweise.push(`${safeText(t.neu.join(", "))} ${plural(t.neu.length, "ist", "sind")} neu dabei und ${plural(t.neu.length, "zählt", "zählen")} mit, im Ziel aber nicht.`);
+  }
+  if (t.ohneGrad) {
+    hinweise.push(`${t.ohneGrad} ${plural(t.ohneGrad, "Challenge", "Challenges")} dieser Saison ohne Grad ${plural(t.ohneGrad, "gibt", "geben")} keine Punkte.`);
+  }
+  if (t.vorherOhneGrad) {
+    hinweise.push(`${t.vorherOhneGrad} ${plural(t.vorherOhneGrad, "Challenge", "Challenges")} der Saison ${safeText(t.vorsaison)} ohne Grad ${plural(t.vorherOhneGrad, "fehlt", "fehlen")} im Ziel.`);
+  }
+
+  el.innerHTML = `
+    <div class="tpCard${geschafft ? " tpGeschafft" : ""}">
+      <div class="tpKopf">
+        <span class="tpTitel">Team-Punkte</span>
+        <span class="tpZahl"><b>${t.punkte}</b>${hatZiel ? ` / ${t.ziel}` : ""}</span>
+      </div>
+      <div class="tpBar" role="img" aria-label="${safeText(hatZiel ? `${t.punkte} von ${t.ziel} Team-Punkten` : `${t.punkte} Team-Punkte`)}">${segmente}${marke}</div>
+      <div class="tpLegende">${legende}</div>
+      ${stand ? `<p class="tpStand">${stand}</p>` : ""}
+      ${gradZeilen ? `
+      <div class="tpGrade">
+        <div class="tpGradeTitel">Geschaffte Routen pro Grad${hatZiel ? ` – gegen die ganze Saison ${safeText(t.vorsaison)}` : ""}</div>
+        ${gradZeilen}
+      </div>` : ""}
+      <p class="muted tpHint">Punkte = Grad × Anzahl Erfolge.${hatZiel ? ` Ziel ist das Total der Saison ${safeText(t.vorsaison)} von denselben Teilnehmern.` : ""} ${hinweise.join(" ")}</p>
     </div>`;
 }
 
