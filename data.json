@@ -29,6 +29,34 @@
       ],
       "challenges": [
         {
+          "id": "2026-11-09",
+          "date": "2026-11-09",
+          "label": "KW 46",
+          "route": "Orange leuchtend kleingriffig",
+          "grade": 7,
+          "setBy": "Dan",
+          "removedFrom": null,
+          "notes": "",
+          "results": {
+            "Dan": {
+              "status": "success",
+              "when": ""
+            },
+            "Geo": {
+              "status": "fail",
+              "when": ""
+            },
+            "Flo": {
+              "status": "success",
+              "when": ""
+            },
+            "Mar": {
+              "status": "success",
+              "when": ""
+            }
+          }
+        },
+        {
           "id": "2026-11-02",
           "date": "2026-11-02",
           "label": "KW 45",
