@@ -10,6 +10,12 @@
      per Trigger im Änderungsprotokoll (change_log).
    ============================================================ */
 
+// Supabase zeigt im Dashboard teils die API-Adresse mit «/rest/v1/» an.
+// Die Bibliothek braucht die reine Projekt-Adresse – beides soll gehen.
+function projektUrl(url) {
+  return String(url || "").trim().replace(/\/+$/, "").replace(/\/(rest|auth)\/v1$/, "");
+}
+
 const BoulderDB = (() => {
   const cfg = window.BOULDER_CONFIG ?? {};
   const konfiguriert = !!(cfg.supabaseUrl && cfg.supabaseAnonKey && cfg.gruppenEmail);
@@ -20,7 +26,7 @@ const BoulderDB = (() => {
   let session = null;
 
   if (aktiv) {
-    client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+    client = window.supabase.createClient(projektUrl(cfg.supabaseUrl), cfg.supabaseAnonKey);
   }
 
   async function init() {
