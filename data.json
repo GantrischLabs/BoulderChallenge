@@ -29,6 +29,34 @@
       ],
       "challenges": [
         {
+          "id": "2026-11-16",
+          "date": "2026-11-16",
+          "label": "KW 47",
+          "route": "Queergang rot neue Halle",
+          "grade": 8,
+          "setBy": "Mar",
+          "removedFrom": null,
+          "notes": "",
+          "results": {
+            "Dan": {
+              "status": "success",
+              "when": ""
+            },
+            "Geo": {
+              "status": "open",
+              "when": ""
+            },
+            "Flo": {
+              "status": "success",
+              "when": ""
+            },
+            "Mar": {
+              "status": "success",
+              "when": ""
+            }
+          }
+        },
+        {
           "id": "2026-11-09",
           "date": "2026-11-09",
           "label": "KW 46",
