@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0f17" />
   <title>Boulder-Challenge</title>
-  <link rel="stylesheet" href="styles.css?v=20261120a" />
+  <link rel="stylesheet" href="styles.css?v=20261120b" />
 </head>
 <body>
   <header class="container header">
@@ -23,7 +23,7 @@
   <nav class="container tabBar" role="tablist" aria-label="Ansicht">
     <button class="tab active" data-tab="leaderboard" role="tab" aria-selected="true">Rangliste</button>
     <button class="tab" data-tab="challenges" role="tab" aria-selected="false">Challenges</button>
-    <button class="tab" data-tab="admin" role="tab" aria-selected="false">Admin</button>
+    <button class="tab" data-tab="admin" role="tab" aria-selected="false">Erfassen</button>
   </nav>
 
   <main class="container">
@@ -41,10 +41,9 @@
       <div id="challenges"></div>
     </section>
 
-    <section class="tabPanel" id="tab-admin" role="tabpanel" aria-label="Admin" hidden>
+    <section class="tabPanel" id="tab-admin" role="tabpanel" aria-label="Erfassen" hidden>
       <p class="adminNote" id="admArchivedNote" hidden></p>
       <p class="muted" id="admModusHinweis">Änderungen werden als JSON kopiert und in GitHub in <code>data.json</code> eingefügt.</p>
-
 
       <div class="adminGrid">
         <label class="field">
@@ -98,15 +97,15 @@
 
       <div class="adminActions">
         <button id="admAdd" class="btnPrimary" type="button">Challenge hinzufügen</button>
-        <button id="admCopy" class="btn" type="button">JSON kopieren</button>
-        <button id="admDownload" class="btn" type="button">JSON herunterladen</button>
         <button id="admResetLocal" class="btn" type="button">Lokale Änderungen verwerfen</button>
       </div>
+    </section>
 
-      <div class="adminBlock">
-        <div class="adminBlockTitle" id="admJsonTitel">Vorschau (data.json)</div>
-        <textarea id="admJson" class="adminTextarea" rows="10" spellcheck="false"></textarea>
-        <p class="muted" id="admJsonTipp">Tipp: Alles im Textfeld kopieren → GitHub <code>data.json</code> ersetzen → Commit.</p>
+    <!-- Selten gebraucht, darum ohne eigenen Tab: erreichbar über den Link im Footer -->
+    <section class="tabPanel" id="tab-verwaltung" role="tabpanel" aria-label="Verwaltung" hidden>
+      <div class="verwaltungKopf">
+        <h2>Verwaltung</h2>
+        <button id="verwaltungZurueck" class="btn" type="button">← Zurück</button>
       </div>
 
       <div class="adminBlock" id="admSaisonBlock" hidden>
@@ -123,11 +122,22 @@
         <div class="adminBlockTitle">Änderungsprotokoll (letzte 50)</div>
         <div id="admVerlauf" class="verlauf"></div>
       </div>
+
+      <div class="adminBlock">
+        <div class="adminBlockTitle" id="admJsonTitel">Vorschau (data.json)</div>
+        <textarea id="admJson" class="adminTextarea" rows="10" spellcheck="false"></textarea>
+        <div class="adminActions">
+          <button id="admCopy" class="btn" type="button">JSON kopieren</button>
+          <button id="admDownload" class="btn" type="button">JSON herunterladen</button>
+        </div>
+        <p class="muted" id="admJsonTipp">Tipp: Alles im Textfeld kopieren → GitHub <code>data.json</code> ersetzen → Commit.</p>
+      </div>
     </section>
   </main>
 
   <footer class="container footer">
     <p class="muted" id="footerText">Privater Wettbewerb · Daten aus <code>data.json</code></p>
+    <button class="footerLink" id="verwaltungLink" type="button">⚙ Verwaltung</button>
   </footer>
 
   <!-- Undo-Toast -->
@@ -159,8 +169,8 @@
   </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js" defer></script>
-  <script src="config.js?v=20261120a" defer></script>
-  <script src="db.js?v=20261120a" defer></script>
-  <script src="app.js?v=20261120a" defer></script>
+  <script src="config.js?v=20261120b" defer></script>
+  <script src="db.js?v=20261120b" defer></script>
+  <script src="app.js?v=20261120b" defer></script>
 </body>
 </html>
