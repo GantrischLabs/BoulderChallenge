@@ -1589,6 +1589,13 @@ function renderChallenges(challenges, participants, pidToName, pidToColor, now, 
 
 /* ---------------- Admin ---------------- */
 
+// Der fest gewählte Name dieses Handys, sofern er zu den Teilnehmern gehört
+function eigenerNameUnter(participants) {
+  if (!dbModus()) return null;
+  const wer = BoulderDB.wer();
+  return participants.some(p => p.id === wer) ? wer : null;
+}
+
 function emptyDraft(participants) {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -1599,7 +1606,8 @@ function emptyDraft(participants) {
   const label = week ? `KW ${String(week).padStart(2, "0")}` : "";
   return {
     date, label, route: "", grade: "",
-    setBy: participants[0]?.id ?? "",
+    // Vorbelegt mit dem eigenen Namen, im Formular frei änderbar
+    setBy: eigenerNameUnter(participants) ?? participants[0]?.id ?? "",
     removedFrom: "", notes: "",
     results: Object.fromEntries(participants.map(p => [p.id, { status: "open", when: "" }]))
   };
@@ -1887,7 +1895,8 @@ function switchTab(name) {
   document.querySelectorAll(".tabPanel").forEach(p => {
     p.hidden = (p.id !== `tab-${name}`);
   });
-  if (name === "admin") renderVerlauf();
+  if (name === "verwaltung") renderVerlauf();
+  else window.__letzterTab = name;
   // Nach oben scrollen innerhalb des Tabs
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -1896,6 +1905,8 @@ function wireTabs() {
   document.querySelectorAll(".tab").forEach(t => {
     t.addEventListener("click", () => switchTab(t.dataset.tab));
   });
+  document.getElementById("verwaltungLink")?.addEventListener("click", () => switchTab("verwaltung"));
+  document.getElementById("verwaltungZurueck")?.addEventListener("click", () => switchTab(window.__letzterTab ?? "leaderboard"));
 }
 
 /* ---------------- Datenbank: Laden, Anmelden, Protokoll ---------------- */
@@ -2196,7 +2207,7 @@ function renderAdminModus(season) {
   if (hinweis) {
     hinweis.innerHTML = db
       ? "Änderungen werden direkt in der Datenbank gespeichert – für alle sofort sichtbar."
-      : "Änderungen werden als JSON kopiert und in GitHub in <code>data.json</code> eingefügt.";
+      : "Änderungen werden als JSON kopiert (unter Verwaltung ganz unten) und in GitHub in <code>data.json</code> eingefügt.";
   }
 
   const reset = document.getElementById("admResetLocal");
@@ -2395,8 +2406,8 @@ async function renderVerlauf() {
   block.hidden = !zeigen;
   if (!zeigen) return;
 
-  // Nur laden, wenn der Admin-Tab offen ist – nicht bei jedem Chip-Tipp
-  if (document.getElementById("tab-admin")?.hidden) return;
+  // Nur laden, wenn die Verwaltung offen ist – nicht bei jedem Chip-Tipp
+  if (document.getElementById("tab-verwaltung")?.hidden) return;
 
   try {
     // Neu angelegte, noch offene Ergebnisse sind Grundrauschen – weglassen
