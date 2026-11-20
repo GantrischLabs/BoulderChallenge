@@ -12,5 +12,5 @@
 window.BOULDER_CONFIG = {
   supabaseUrl: "https://fcnxryjafhjxwqyycmhe.supabase.co",       // Project Settings → Data API → Project URL
   supabaseAnonKey: "sb_publishable_uAf6LV-gbRs-eTMfJhJ39g_qvTJthwa",   // Project Settings → API Keys → Publishable key
-  gruppenEmail: "mar@boulder.info"       // E-Mail des gemeinsamen Gruppen-Kontos
+  gruppenEmail: "mar@boulder.ch"       // E-Mail des gemeinsamen Gruppen-Kontos
 };
