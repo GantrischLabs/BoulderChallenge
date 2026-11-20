@@ -185,7 +185,7 @@ function istGesperrt() { return isArchived() || nurAnzeige(); }
 // Im DB-Modus braucht jede Änderung Anmeldung + Namen; sonst Dialog öffnen
 function schreibbereit() {
   if (!dbModus()) return true;
-  if (BoulderDB.angemeldet() && BoulderDB.wer()) return true;
+  if (BoulderDB.angemeldet() && werGueltig()) return true;
   // Angemeldet, aber noch kein Name gewählt → "Wer bist du?"
   oeffneLogin();
   return false;
@@ -2068,6 +2068,14 @@ function teilnehmerFuerLogin() {
   return s?.participants ?? aktiv;
 }
 
+// Der Name ist pro Handy fest. Neu wählen kann man nur, wenn noch keiner
+// gesetzt ist oder der gespeicherte nicht mehr zur Saison gehört
+// (z.B. neue Saison ohne diese Person).
+function werGueltig() {
+  const wer = BoulderDB.wer();
+  return !!wer && teilnehmerFuerLogin().some(p => p.id === wer);
+}
+
 function renderDbStatus() {
   const el = document.getElementById("dbStatus");
   if (!el) return;
@@ -2076,8 +2084,8 @@ function renderDbStatus() {
   if (!dbModus()) { el.hidden = true; return; }
   el.hidden = false;
   el.classList.remove("dbStatusFehler");
-  el.textContent = BoulderDB.wer()
-    ? `✎ Erfassen als ${nameVon(BoulderDB.wer())} · ändern`
+  el.textContent = werGueltig()
+    ? `✎ Erfassen als ${nameVon(BoulderDB.wer())}`
     : "👤 Wer bist du? · Namen wählen";
 
   if (!el.dataset.wired) {
@@ -2091,21 +2099,32 @@ function oeffneLogin() {
   if (!dlg) return;
 
   const angemeldet = BoulderDB.angemeldet();
+  // Schritt 3: Name steht schon fest → nur anzeigen, kein Wechsel
+  const fest = angemeldet && werGueltig();
   const participants = teilnehmerFuerLogin();
   const sel = document.getElementById("loginWer");
   sel.innerHTML = `<option value="">– bitte wählen –</option>`
     + participants.map(p => `<option value="${safeText(p.id)}">${safeText(p.name)}</option>`).join("");
-  sel.value = participants.some(p => p.id === BoulderDB.wer()) ? BoulderDB.wer() : "";
+  sel.value = "";
 
   // Schritt 1: nur Passwort (die Namen sind vor der Anmeldung nicht lesbar).
-  // Schritt 2: angemeldet → nur noch die Person wählen.
-  document.getElementById("loginWerFeld").hidden = !angemeldet;
+  // Schritt 2: angemeldet → einmalig die Person wählen.
+  document.getElementById("loginWerFeld").hidden = !angemeldet || fest;
   document.getElementById("loginPwFeld").hidden = angemeldet;
   document.getElementById("loginPw").value = "";
-  document.getElementById("loginTitel").textContent = angemeldet ? "Wer bist du?" : "Anmelden";
+  document.getElementById("loginTitel").textContent = fest
+    ? `Angemeldet als ${nameVon(BoulderDB.wer())}`
+    : (angemeldet ? "Wer bist du?" : "Anmelden");
   document.getElementById("loginOk").textContent = angemeldet ? "Übernehmen" : "Anmelden";
+  document.getElementById("loginOk").hidden = fest;
+  document.getElementById("loginAbbrechen").textContent = fest ? "Schliessen" : "Abbrechen";
   document.getElementById("loginAbmelden").hidden = !angemeldet;
   document.getElementById("loginFehler").hidden = true;
+  document.getElementById("loginHinweis").textContent = fest
+    ? "Auf diesem Handy wird unter diesem Namen erfasst. Falscher Name? Abmelden und mit dem Gruppen-Passwort neu anmelden."
+    : (angemeldet
+        ? "Der Name gilt danach fest für dieses Handy und steht bei jeder Änderung im Protokoll."
+        : "Dein Name steht bei jeder Änderung im Protokoll.");
 
   if (typeof dlg.showModal === "function") { if (!dlg.open) dlg.showModal(); }
   else dlg.setAttribute("open", "");
@@ -2148,11 +2167,12 @@ function wireLogin() {
       schliesseLogin();
       await neuLaden();
       // Gleich weiter zu Schritt 2, damit jede Änderung einen Namen trägt
-      if (!BoulderDB.wer() && teilnehmerFuerLogin().length) oeffneLogin();
+      if (!werGueltig() && teilnehmerFuerLogin().length) oeffneLogin();
       return;
     }
 
-    // Schritt 2: Name
+    // Schritt 2: Name – nur, solange noch keiner fest ist
+    if (werGueltig()) { schliesseLogin(); return; }
     const wer = document.getElementById("loginWer").value;
     if (!wer) { fehler("Bitte wählen, wer du bist."); return; }
     BoulderDB.setzeWer(wer);

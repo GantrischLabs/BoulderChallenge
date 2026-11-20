@@ -59,9 +59,12 @@ const BoulderDB = (() => {
     session = data.session;
   }
 
+  // Abmelden vergisst auch den Namen: Wer den Namen wechseln will,
+  // muss sich mit dem Gruppen-Passwort neu anmelden.
   async function abmelden() {
     try { await client.auth.signOut(); } catch {}
     session = null;
+    try { localStorage.removeItem(LS_WER); } catch {}
   }
 
   /* ---------------- Mapping DB ↔ data.json-Format ---------------- */
