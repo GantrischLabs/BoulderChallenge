@@ -1705,6 +1705,13 @@ function wireAdminHandlers() {
         return;
       }
 
+      // Der Grad ist Pflicht (in der Datenbank NOT NULL)
+      if (!draft.grade) {
+        alert("Bitte die Schwierigkeit wählen.");
+        document.getElementById("admGrade")?.focus();
+        return;
+      }
+
       if (dbModus() && !schreibbereit()) return;
 
       const updatedChallenge = {

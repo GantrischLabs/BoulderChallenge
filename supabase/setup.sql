@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS public.challenges (
 	date			DATE		NOT NULL,
 	label			TEXT		NOT NULL DEFAULT '',
 	route			TEXT		NOT NULL,
-	-- Gym-specific grade scale 4-9, NULL when not recorded
-	grade			SMALLINT	CHECK (grade BETWEEN 4 AND 9),
+	-- Gym-specific grade scale 4-9, required
+	grade			SMALLINT	NOT NULL CHECK (grade BETWEEN 4 AND 9),
 	set_by			TEXT		NOT NULL,
 	removed_from	DATE,
 	notes			TEXT		NOT NULL DEFAULT '',
@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS public.change_log (
 );
 
 CREATE INDEX IF NOT EXISTS ix_change_log_changed_at ON public.change_log (changed_at DESC);
+
+-- Grade became required later; upgrades an existing table (fails if a challenge still has no grade)
+ALTER TABLE public.challenges ALTER COLUMN grade SET NOT NULL;
 
 -- Added separately so the script also upgrades a database created with the first version (challenges before seasons)
 DO $$
