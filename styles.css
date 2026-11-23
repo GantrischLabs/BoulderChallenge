@@ -1267,6 +1267,9 @@ code{
 }
 .footerLink:hover{ color: var(--text); }
 body.gesperrt .footerLink{ display: none; }
+/* Gast: nur lesen, darum ohne Erfassen und Verwaltung */
+body.gast .tab[data-tab="admin"],
+body.gast .footerLink{ display: none; }
 
 .verwaltungKopf{
   display: flex;
