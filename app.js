@@ -177,7 +177,13 @@ function isArchived() {
 window.__MODUS__ = "lokal";
 
 function dbModus() { return window.__MODUS__ === "db"; }
-function nurAnzeige() { return window.__MODUS__ === "db-fehler"; }
+// Gast: wird statt eines Namens bei "Wer bist du?" gewählt und darf nur lesen.
+// Das ist eine Sperre in der App, nicht in der Datenbank – der Gast nutzt
+// dasselbe Gruppen-Passwort wie alle.
+const GAST = "__gast__";
+function istGast() { return dbModus() && BoulderDB.wer() === GAST; }
+
+function nurAnzeige() { return window.__MODUS__ === "db-fehler" || istGast(); }
 
 // Archivierte Saison oder DB weg: keine Änderungen möglich
 function istGesperrt() { return isArchived() || nurAnzeige(); }
@@ -185,6 +191,7 @@ function istGesperrt() { return isArchived() || nurAnzeige(); }
 // Im DB-Modus braucht jede Änderung Anmeldung + Namen; sonst Dialog öffnen
 function schreibbereit() {
   if (!dbModus()) return true;
+  if (istGast()) return false;
   if (BoulderDB.angemeldet() && werGueltig()) return true;
   // Angemeldet, aber noch kein Name gewählt → "Wer bist du?"
   oeffneLogin();
@@ -1621,7 +1628,7 @@ function renderAdmin(doc, season, participants) {
   const note = document.getElementById("admArchivedNote");
   if (note) {
     note.hidden = !archived;
-    note.textContent = nurAnzeige()
+    note.textContent = window.__MODUS__ === "db-fehler"
       ? `Datenbank nicht erreichbar (${window.__DB_FEHLER__ ?? "unbekannter Fehler"}) – Erfassen ist gerade nicht möglich.`
       : archived
         ? `„${season?.name ?? "Diese Saison"}“ ist archiviert – Bearbeiten ist deaktiviert. Oben auf die laufende Saison wechseln, um Challenges zu erfassen.`
@@ -1991,6 +1998,12 @@ async function neuLaden() {
 function zeige(doc) {
   const gesperrt = ["db-login", "db-leer", "db-fehler"].includes(window.__MODUS__);
   document.body.classList.toggle("gesperrt", gesperrt);
+  // Gast: Erfassen und Verwaltung ausblenden (siehe styles.css)
+  const gast = !gesperrt && istGast();
+  document.body.classList.toggle("gast", gast);
+  if (gast && ["tab-admin", "tab-verwaltung"].some(id => !document.getElementById(id)?.hidden)) {
+    switchTab("leaderboard");
+  }
   window.__DATA__ = doc;
   if (gesperrt) {
     renderSperre();
@@ -2051,6 +2064,7 @@ async function importiereJsonStand() {
   const quelle = window.__JSON_STAND__;
   if (!quelle) return;
   if (!BoulderDB.wer()) { oeffneLogin(); return; }
+  if (BoulderDB.wer() === GAST) return;
 
   const btn = document.querySelector("#loginGate [data-aktion=import]");
   if (btn) btn.disabled = true;
@@ -2094,6 +2108,9 @@ function werGueltig() {
   return !!wer && teilnehmerFuerLogin().some(p => p.id === wer);
 }
 
+// Name oder Gast gewählt: dann fragt die App nicht mehr nach
+function identitaetFest() { return werGueltig() || istGast(); }
+
 function renderDbStatus() {
   const el = document.getElementById("dbStatus");
   if (!el) return;
@@ -2102,9 +2119,11 @@ function renderDbStatus() {
   if (!dbModus()) { el.hidden = true; return; }
   el.hidden = false;
   el.classList.remove("dbStatusFehler");
-  el.textContent = werGueltig()
-    ? `✎ Erfassen als ${nameVon(BoulderDB.wer())}`
-    : "👤 Wer bist du? · Namen wählen";
+  el.textContent = istGast()
+    ? "👀 Gast · nur lesen"
+    : werGueltig()
+      ? `✎ Erfassen als ${nameVon(BoulderDB.wer())}`
+      : "👤 Wer bist du? · Namen wählen";
 
   if (!el.dataset.wired) {
     el.dataset.wired = "1";
@@ -2118,11 +2137,13 @@ function oeffneLogin() {
 
   const angemeldet = BoulderDB.angemeldet();
   // Schritt 3: Name steht schon fest → nur anzeigen, kein Wechsel
-  const fest = angemeldet && werGueltig();
+  const fest = angemeldet && identitaetFest();
+  const gast = fest && istGast();
   const participants = teilnehmerFuerLogin();
   const sel = document.getElementById("loginWer");
   sel.innerHTML = `<option value="">– bitte wählen –</option>`
-    + participants.map(p => `<option value="${safeText(p.id)}">${safeText(p.name)}</option>`).join("");
+    + participants.map(p => `<option value="${safeText(p.id)}">${safeText(p.name)}</option>`).join("")
+    + `<option value="${GAST}">👀 Gast (nur lesen)</option>`;
   sel.value = "";
 
   // Schritt 1: nur Passwort (die Namen sind vor der Anmeldung nicht lesbar).
@@ -2131,18 +2152,20 @@ function oeffneLogin() {
   document.getElementById("loginPwFeld").hidden = angemeldet;
   document.getElementById("loginPw").value = "";
   document.getElementById("loginTitel").textContent = fest
-    ? `Angemeldet als ${nameVon(BoulderDB.wer())}`
+    ? (gast ? "Angemeldet als Gast" : `Angemeldet als ${nameVon(BoulderDB.wer())}`)
     : (angemeldet ? "Wer bist du?" : "Anmelden");
   document.getElementById("loginOk").textContent = angemeldet ? "Übernehmen" : "Anmelden";
   document.getElementById("loginOk").hidden = fest;
   document.getElementById("loginAbbrechen").textContent = fest ? "Schliessen" : "Abbrechen";
   document.getElementById("loginAbmelden").hidden = !angemeldet;
   document.getElementById("loginFehler").hidden = true;
-  document.getElementById("loginHinweis").textContent = fest
-    ? "Auf diesem Handy wird unter diesem Namen erfasst. Falscher Name? Abmelden und mit dem Gruppen-Passwort neu anmelden."
-    : (angemeldet
-        ? "Der Name gilt danach fest für dieses Handy und steht bei jeder Änderung im Protokoll."
-        : "Dein Name steht bei jeder Änderung im Protokoll.");
+  document.getElementById("loginHinweis").textContent = gast
+    ? "Als Gast kannst Du alles ansehen, aber nichts ändern. Zum Erfassen abmelden und mit Deinem Namen neu anmelden."
+    : fest
+      ? "Auf diesem Handy wird unter diesem Namen erfasst. Falscher Name? Abmelden und mit dem Gruppen-Passwort neu anmelden."
+      : (angemeldet
+          ? "Der Name gilt danach fest für dieses Handy und steht bei jeder Änderung im Protokoll. Gäste wählen «Gast»."
+          : "Dein Name steht bei jeder Änderung im Protokoll.");
 
   if (typeof dlg.showModal === "function") { if (!dlg.open) dlg.showModal(); }
   else dlg.setAttribute("open", "");
@@ -2185,12 +2208,12 @@ function wireLogin() {
       schliesseLogin();
       await neuLaden();
       // Gleich weiter zu Schritt 2, damit jede Änderung einen Namen trägt
-      if (!werGueltig() && teilnehmerFuerLogin().length) oeffneLogin();
+      if (!identitaetFest() && teilnehmerFuerLogin().length) oeffneLogin();
       return;
     }
 
     // Schritt 2: Name – nur, solange noch keiner fest ist
-    if (werGueltig()) { schliesseLogin(); return; }
+    if (identitaetFest()) { schliesseLogin(); return; }
     const wer = document.getElementById("loginWer").value;
     if (!wer) { fehler("Bitte wählen, wer du bist."); return; }
     BoulderDB.setzeWer(wer);
